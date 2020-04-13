@@ -1,4 +1,4 @@
-# image_spring_cleaning
+# Image Spring Cleaning
 Did you ever take duplicate photos just to make sure, that a moment does not only remain a souvenir of your mind but an array of shape (n,m,3) as well?
 
 After the holidy, you might face the same challenge as I do (especially if you have a loose finger on the trigger): 
