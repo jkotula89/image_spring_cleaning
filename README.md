@@ -11,3 +11,4 @@ This fine little word safely can be interpreted in different ways and we will co
 
 At a later stage, I would like to extent the distinctive capabilities of the algorithm and pay more attention to images that focus on persons.
 
+As this is pipeline is in development, for the time being I only sponsor juypter notebooks.
