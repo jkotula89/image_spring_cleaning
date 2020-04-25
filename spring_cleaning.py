@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-version = '0.0.1'
+version = '0.0.2'
 
 def split_filepath(file, split=False):
     """
@@ -134,7 +134,7 @@ def hash_image(img, min_pix=8):
             y = int(y/x * 8)
             x = 8
         else:
-            x = int(x/y *8)
+            x = int(x/y * 8)
             y = 8
             
     elif type(min_pix) == tuple:
@@ -143,22 +143,21 @@ def hash_image(img, min_pix=8):
     return cv2.resize(img, (x, y))
 
 
-def copy_imgs(df, path=('./images/', './processed/'), rank_col=None, crit_col=None):
+def copy_images(df, path=('./images/', './processed/'), rank_col=None, crit_col=None):
     """
     Function that copies the processed images to the destination repository.
     
     Parameters:
     ------------------------------
-        df: (pandas DataFrame), that is grouped by column pred
+        df: (pandas DataFrame), that is grouped by column rank_col
         path = (tuple, str), (input_path, output_path) of images 
         rank_col: (str), ranked column in the DataFrame
         crit_col: (str), the column containing the criteria, greater
             values are better
     """
-    for _, v in df.iloc[df.groupby([rank_col])[crit_col].idxmax().values].iterrows():
-        filename, ext = v['File'].split('.')
-        old, new = path[0] + v['File'], path[1] + str(v[rank_col]) + '.' + ext
-        shutil.copy2(old, new)
+    for cur_file in df.loc[df.groupby([rank_col])[crit_col].idxmax(), 'file'].values:
+        shutil.copy2(path[0] + cur_file, path[1] + cur_file)
+
 
 def rotate_img(img, degree=0):
     """
@@ -207,7 +206,7 @@ def warp_img(img, scale=0.0, how=None):
     else:
         print('Parameter how has to be in "bottom", "top", "left", "right".')
 
-    pout = np.float32([[0,0],[rows,0],[0,cols],[rows,cols]])
+    pout = np.float32([[0,0], [rows,0], [0,cols], [rows,cols]])
     M_warp = cv2.getPerspectiveTransform(pinp, pout)
     img_warp = cv2.warpPerspective(img, M_warp, (cols,rows),
                               flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
@@ -224,6 +223,11 @@ def compare_hashes_adv(images, hash_dim=(8, 8), range_deg=(-5, 5, 1),
     ------------------------------
         images = (list), list of images (arrays)
         hash_dim = (tuple), expected x & y pixel of the hashed images
+        range_deg = (tuple), (min_value, max_value, step) for image rotation
+        warping = (tuple), how to warp image, choose and combine ('left', 'right', 'top', 'bottom')
+        range_warp = (tuple), (min_value, max_value, step) for image warping,
+                        min/max_values have to be in [0, 0.5)
+        return_hash_only = (bool), if True, only true image hash is calculated
         
     Returns:
     ------------------------------
@@ -277,10 +281,9 @@ def compare_hashes_adv(images, hash_dim=(8, 8), range_deg=(-5, 5, 1),
                 if cur_hash > max_hash:
                     max_hash = cur_hash
             compared_hashes.append(max_hash)
-
     return compared_hashes
 
-def high_pass_filtering(img, x_shift=0, y_shift=0):
+def high_pass_filtering(img, x_shift=30, y_shift=30):
     """
     High-pass filter for images, calculates the magnitude spectrum.
     
@@ -297,17 +300,18 @@ def high_pass_filtering(img, x_shift=0, y_shift=0):
     _row, _col = int(rows/2), int(cols/2)
     f = np.fft.fft2(img)
     fshift = np.fft.fftshift(f)
-    fshift[_row-y_shift:_row+y_shift, _col-x_shift:_col+x_shift] = 0 # this is the filtering
+    fshift[_row - y_shift:_row + y_shift, _col - x_shift:_col + x_shift] = 0 # here happens the filtering
     f_ishift = np.fft.ifftshift(fshift)
     img_back = np.fft.ifft2(f_ishift)
     img_back = np.abs(img_back)
-    flattened_spectrum = img_back.reshape(-1,1)
+
+    flattened_spectrum = img_back.reshape(-1, 1)
     x_hist, y_hist = np.histogram(flattened_spectrum, bins=255)
     y_hist_corr = [(y_hist[i] + y_hist[i+1])/2.0 for i in range(len(y_hist)-1)]
     mag_spectrum = np.cumsum(y_hist_corr)[-1]
     return mag_spectrum
 
-def calculate_loss(labels, pred, n_img=None):
+def calculate_loss(labels, predictions, n_img=None):
     """
     Loss function for ranking evaluation. Has two contributions:
     * MSE estimate, if the ranking yields more groups than actually exist (unproblematic)
@@ -316,56 +320,35 @@ def calculate_loss(labels, pred, n_img=None):
     
     Parameters:
     ------------------------------
-        pred = (list, array), label predictions
+        labels = (series, array), true labels
+        predictions = (series, array), predicted labels
         n_img = (int), true number of groups
         
     Returns:
     ------------------------------
-        tuple, (number of images found, 
-                  number of unique images identified, 
+        tuple, (image groups found, 
+                  unique image groups found, 
                   loss value (min value = 1))
     """
     def penalty(x):
         return np.sum(x**3)
     
-    # 1. MSE estimate
-    mse = np.sum((labels - pred) ** 2)
+    df_perf = pd.DataFrame(np.c_[labels, predictions], columns=['labels', 'pred'])
+
+    # 1. MSE loss for finding to many image groups
+    mse = np.sum( (df_perf['labels'] - df_perf['pred']) ** 2)
     
-    # 2. error for missed images
-    df = pd.DataFrame(np.c_[labels, pred], columns=['labels', 'pred'])
-    df_grouped = df.groupby(['pred'])['labels'].apply(lambda x: len(set(x))).to_frame()
+    # 2. Penalty loss for missed images
+    df_grouped = df_perf.groupby(['pred'])['labels'].apply(lambda x: len(set(x))).to_frame()
     miss_loss = penalty(df_grouped['labels'].values)
     
-    # 3. images found
-    img_found = min(n_img, len(set(df_grouped.index[df_grouped['labels']==1].values)))
-    img_unique = len(df['pred'].unique())
+    # 3. Images found
+    groups_found = min(n_img, len(set(df_grouped.index[df_grouped['labels']==1].values)))
+    groups_unique = len(df_perf['pred'].unique())
     
-    miss_loss /= max(1, img_found)
-    mse /= max(1, img_found)    
-    return img_found, img_unique, mse + miss_loss
-
-def calc_correlations_old(df, img):
-    """
-    Function to calculate correlations between images.
-    
-    Parameters:
-    ------------------------------
-        df: pandas DataFrame corresponding to image data
-        img: list of images in HSV mode 
-    """
-    methods = {'bhattacharyya': cv2.HISTCMP_BHATTACHARYYA,
-               'correl': cv2.HISTCMP_CORREL,
-    }
-
-    img_hists = [calculate_hist(cur_img, [0,1], None, [180,256], [0,180,0,256]) for cur_img in img]
-
-    for name, method in methods.items():
-        cors = [cv2.compareHist(img_hists[i-1], img_hists[i], method) for i in range(len(img_hists))]
-        cors.append(cors.pop(0))
-        df['{}_corr'.format(name)] = cors 
-        if name == 'bhattacharyya':
-            df['{}_corr'.format(name)] = 1 - df['{}_corr'.format(name)]
-
+    miss_loss /= max(1, groups_found)
+    mse /= max(1, groups_found)    
+    return groups_found, groups_unique, mse + miss_loss
 
 def calc_correlations(images, method):
     """
@@ -384,7 +367,7 @@ def calc_correlations(images, method):
                'correl': cv2.HISTCMP_CORREL,
     }
 
-    img_hists = [calculate_hist(cur_img, [0,1], None, [180,256], [0,180,0,256]) for cur_img in images]
+    img_hists = [calculate_hist(cur_img, [0,1], None, [180, 256], [0,180, 0,256]) for cur_img in images]
     cors = [cv2.compareHist(img_hists[i-1], img_hists[i], methods[method]) for i in range(len(img_hists))]
     cors.append(cors.pop(0))
 
@@ -394,94 +377,102 @@ def calc_correlations(images, method):
 
 
 def timelag_ranker(series, max_lag=5, max_per_group=5):
-    """
-    Ranker function, distinguishes images based on difference timestamps.
-    
-    Parameters:
-    ------------------------------
-        series = pandas Series of timestamps
-        max_lag = (float), seconds between images
-        group_default = (int), maximum number of images per group
-    
-    Returns:
-    ------------------------------        
-        Generator of Rank
-    """
-    rank = 0
-    n_group = 0
-    for row in series.iloc[:-1]:
+    def timelag_ranker_(series, max_lag, max_per_group):
+        """
+        Ranker function, distinguishes images based on difference timestamps.
+        
+        Parameters:
+        ------------------------------
+            series = pandas Series of timestamps
+            max_lag = (float), seconds between images
+            group_default = (int), maximum number of images per group
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        rank = 0
+        n_group = 0
+        for row in series.iloc[:-1]:
+            yield rank
+            n_group += 1
+            if row > max_lag:
+                rank += 1
+                n_group = 0
+            elif n_group > max_per_group:
+                rank += 1
+                n_group = 0
         yield rank
-        n_group += 1
-        if row > max_lag:
-            rank += 1
-            n_group = 0
-        elif n_group > max_per_group:
-            rank += 1
-            n_group = 0
-    yield rank     
+    return list(timelag_ranker_(series, max_lag, max_per_group))
 
-def hash_ranker(series, dim=None, limit=0.85):
-    """
-    Ranker function, distinguishes images based on similary of image hashes.
-    Hash refers here to low resolution images (~8 px per x and y dimensions)
-    
-    Parameters:
-    ------------------------------
-        series = pandas Series, containing image hash values
-        dims = (int), number of image dimensions (in px)
-        limit = (float), lower limit for hash similarity to be recognized 
-                        as similar imageS
-    
-    Returns:
-    ------------------------------        
-        Generator of Rank
-    """
-    rank = 0
-    for row in series.iloc[:-1]:
+def hash_ranker(series, dim=None, limit=0.9):
+    def hash_ranker_(series, dim, limit):
+        """
+        Ranker function, distinguishes images based on similary of image hashes.
+        Hash refers here to low resolution images (~8 px per x and y dimensions)
+        
+        Parameters:
+        ------------------------------
+            series = pandas Series, containing image hash values
+            dims = (int), number of image dimensions (in px)
+            limit = (float), lower limit for hash similarity to be recognized 
+                            as similar imageS
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        rank = 0
+        for row in series.iloc[:-1]:
+            yield rank
+            if row < np.product(dim) * limit:
+                rank += 1
         yield rank
-        if row < np.product(dim) * limit:
-            rank += 1
-    yield rank
+    return list(hash_ranker_(series, dim, limit))
 
-def corr_ranker(series, coff_lim):
-    """
-    Ranker function, distinguishes images based on correlation of image (has to be provided).
-    
-    Parameters:
-    ------------------------------
-        series = pandas Series, containing image hash values
-        coff_lim = (dict), where keys refer to the method used and the values
-                            are the lower bounds for recognition as similar images.
-    
-    Returns:
-    ------------------------------        
-        Generator of Rank
-    """
-    name = series.name.split('_')[0]
-    rank = 0
-    for row in series.iloc[:-1]:
-        yield rank
-        if row < coff_lim[name]:
-            rank += 1
-    yield rank     
+def corr_ranker(series, coff_lim={'bhattacharyya': 0.55, 'correl': 0.8}):
+    def corr_ranker(series, coff_lim):
+        """
+        Ranker function, distinguishes images based on correlation of image (has to be provided).
+        
+        Parameters:
+        ------------------------------
+            series = pandas Series, containing image hash values
+            coff_lim = (dict), where keys refer to the method used and the values
+                                are the lower bounds for recognition as similar images.
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        name = series.name.split('_')[0]
+        rank = 0
+        for row in series.iloc[:-1]:
+            yield rank
+            if row < coff_lim[name]:
+                rank += 1
+        yield rank     
+    return list(corr_ranker(series, coff_lim))
 
 def vote_ranker(series, lim=0.4):
-    """
-    Ranker function, mean of differences of ranks (from different methods)
-    serves as discriminator of ranks from ensemble.
-    
-    Parameters:
-    ------------------------------
-        series = pandas Series, containing image average 
-        lim = (dict), has to be in [0, 1]
-    
-    Returns:
-    ------------------------------        
-        Generator of Rank
-    """
-    rank = 0
-    for row in series.iloc[:-1]:
+    def vote_ranker_(series, lim):
+        """
+        Ranker function, mean of differences of ranks (from different methods)
+        serves as discriminator of ranks from ensemble.
+        
+        Parameters:
+        ------------------------------
+            series = pandas Series, containing image average 
+            lim = (dict), has to be in [0, 1]
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        rank = 0
+        for row in series.iloc[:-1]:
+            yield rank
+            if row < lim:
+                rank += 1
         yield rank
-        if row < lim:
-            rank += 1
-    yield rank
+    return list(vote_ranker_(series, lim))
