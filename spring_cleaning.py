@@ -405,7 +405,7 @@ def timelag_ranker(series, max_lag=5, max_per_group=5):
         yield rank
     return list(timelag_ranker_(series, max_lag, max_per_group))
 
-def hash_ranker(series, dim=None, limit=0.9):
+def hash_ranker(series, dim=None, limit=0.875):
     def hash_ranker_(series, dim, limit):
         """
         Ranker function, distinguishes images based on similary of image hashes.
@@ -430,7 +430,7 @@ def hash_ranker(series, dim=None, limit=0.9):
         yield rank
     return list(hash_ranker_(series, dim, limit))
 
-def corr_ranker(series, coff_lim={'bhattacharyya': 0.55, 'correl': 0.8}):
+def corr_ranker(series, coff_lim={'bhattacharyya': 0.61, 'correl': 0.8}):
     def corr_ranker(series, coff_lim):
         """
         Ranker function, distinguishes images based on correlation of image (has to be provided).
