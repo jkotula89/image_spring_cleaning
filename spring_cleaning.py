@@ -313,7 +313,8 @@ def high_pass_filtering(img, x_shift=30, y_shift=30):
 
 def calculate_loss(labels, predictions, n_img=None):
     """
-    Loss function for ranking evaluation. Has two contributions:
+    Loss function for ranking evaluation - can be used for calibration.
+    Has two contributions:
     * MSE estimate, if the ranking yields more groups than actually exist (unproblematic)
     * a polynomial penalty, if the ranking groups together images of different classes (problematic,
         since images might get lost)
@@ -328,28 +329,37 @@ def calculate_loss(labels, predictions, n_img=None):
     ------------------------------
         tuple, (image groups found, 
                   unique image groups found, 
-                  loss value (min value = 1))
+                  loss value (min value = 1),
+                  reduction ratio (smaller is better))
     """
     def penalty(x):
-        return np.sum(x**3)
+        return np.sum( x**10 )
     
     df_perf = pd.DataFrame(np.c_[labels, predictions], columns=['labels', 'pred'])
 
-    # 1. MSE loss for finding to many image groups
+    # 1. MSE loss for finding more image groups than are actually present
     mse = np.sum( (df_perf['labels'] - df_perf['pred']) ** 2)
     
     # 2. Penalty loss for missed images
     df_grouped = df_perf.groupby(['pred'])['labels'].apply(lambda x: len(set(x))).to_frame()
     miss_loss = penalty(df_grouped['labels'].values)
     
-    # 3. Images found
+    # 3. Number of groups found
     groups_found = min(n_img, len(set(df_grouped.index[df_grouped['labels']==1].values)))
     groups_unique = len(df_perf['pred'].unique())
+    groups_true = len(df_perf['labels'].unique())
     
-    miss_loss /= max(1, groups_found)
-    mse /= max(1, groups_found)    
-    return groups_found, groups_unique, mse + miss_loss
+    # 4. Reduction ratio
+    if groups_found >= groups_true:
+        reduction = groups_unique / len(df_perf)
+    else:
+        reduction = groups_found / len(df_perf)
+    
+    mse /= max(1, groups_found) * 100
+    miss_loss /= max(1, groups_found) 
 
+    return (groups_found, groups_unique, 
+            mse + miss_loss, reduction)
 def calc_correlations(images, method):
     """
     Function to calculate correlations between images.
