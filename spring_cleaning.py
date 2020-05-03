@@ -311,13 +311,10 @@ def high_pass_filtering(img, x_shift=30, y_shift=30):
     mag_spectrum = np.cumsum(y_hist_corr)[-1]
     return mag_spectrum
 
-def calculate_loss(labels, predictions, n_img=None):
+def calculate_performance(labels, predictions, n_img=None):
     """
-    Loss function for ranking evaluation - can be used for calibration.
+    Returns performance summary for ranking evaluation - can be used for calibration.
     Has two contributions:
-    * MSE estimate, if the ranking yields more groups than actually exist (unproblematic)
-    * a polynomial penalty, if the ranking groups together images of different classes (problematic,
-        since images might get lost)
     
     Parameters:
     ------------------------------
@@ -329,37 +326,24 @@ def calculate_loss(labels, predictions, n_img=None):
     ------------------------------
         tuple, (image groups found, 
                   unique image groups found, 
-                  loss value (min value = 1),
-                  reduction ratio (smaller is better))
+                  true number of image groups
+                  normalized reduction ratio (1 is best ))
     """
-    def penalty(x):
-        return np.sum( x**10 )
-    
     df_perf = pd.DataFrame(np.c_[labels, predictions], columns=['labels', 'pred'])
-
-    # 1. MSE loss for finding more image groups than are actually present
-    mse = np.sum( (df_perf['labels'] - df_perf['pred']) ** 2)
-    
-    # 2. Penalty loss for missed images
     df_grouped = df_perf.groupby(['pred'])['labels'].apply(lambda x: len(set(x))).to_frame()
-    miss_loss = penalty(df_grouped['labels'].values)
-    
-    # 3. Number of groups found
+
     groups_found = min(n_img, len(set(df_grouped.index[df_grouped['labels']==1].values)))
     groups_unique = len(df_perf['pred'].unique())
-    groups_true = len(df_perf['labels'].unique())
     
-    # 4. Reduction ratio
-    if groups_found >= groups_true:
-        reduction = groups_unique / len(df_perf)
-    else:
-        reduction = groups_found / len(df_perf)
+    max_red = n_img / len(df_perf)
+    reduction = groups_unique / len(df_perf) * groups_found / n_img
+    reduction /= max_red
     
-    mse /= max(1, groups_found) * 100
-    miss_loss /= max(1, groups_found) 
-
-    return (groups_found, groups_unique, 
-            mse + miss_loss, reduction)
+    return (groups_found, 
+            groups_unique,
+            n_img,
+            reduction)
+            
 def calc_correlations(images, method):
     """
     Function to calculate correlations between images.
@@ -367,7 +351,7 @@ def calc_correlations(images, method):
     Parameters:
     ------------------------------
         images: list, of images read in HSV mode
-        method: str, 'bhattacharyya' or 'correl', refer to cv2 for further information
+        method: str, 'bhattacharyya', 'correl' refer to cv2 for further information
 
     Returns:
     ------------------------------
@@ -401,7 +385,7 @@ def timelag_ranker(series, max_lag=5, max_per_group=5):
         ------------------------------        
             Generator of Rank
         """
-        rank = 0
+        rank = 1
         n_group = 0
         for row in series.iloc[:-1]:
             yield rank
@@ -432,7 +416,7 @@ def hash_ranker(series, dim=None, limit=0.875):
         ------------------------------        
             Generator of Rank
         """
-        rank = 0
+        rank = 1
         for row in series.iloc[:-1]:
             yield rank
             if row < np.product(dim) * limit:
@@ -440,15 +424,15 @@ def hash_ranker(series, dim=None, limit=0.875):
         yield rank
     return list(hash_ranker_(series, dim, limit))
 
-def corr_ranker(series, coff_lim={'bhattacharyya': 0.61, 'correl': 0.8}):
-    def corr_ranker(series, coff_lim):
+def corr_ranker(series, limits={'bhattacharyya': 0.61, 'correl': 0.8}):
+    def corr_ranker(series, limits):
         """
         Ranker function, distinguishes images based on correlation of image (has to be provided).
         
         Parameters:
         ------------------------------
             series = pandas Series, containing image hash values
-            coff_lim = (dict), where keys refer to the method used and the values
+            limits = (dict), where keys refer to the method used and the values
                                 are the lower bounds for recognition as similar images.
         
         Returns:
@@ -456,16 +440,16 @@ def corr_ranker(series, coff_lim={'bhattacharyya': 0.61, 'correl': 0.8}):
             Generator of Rank
         """
         name = series.name.split('_')[0]
-        rank = 0
+        rank = 1
         for row in series.iloc[:-1]:
             yield rank
-            if row < coff_lim[name]:
+            if row < limits[name]:
                 rank += 1
         yield rank     
-    return list(corr_ranker(series, coff_lim))
+    return list(corr_ranker(series, limits))
 
-def vote_ranker(series, lim=0.4):
-    def vote_ranker_(series, lim):
+def vote_ranker(series, limit=0.41):
+    def vote_ranker_(series, limit):
         """
         Ranker function, mean of differences of ranks (from different methods)
         serves as discriminator of ranks from ensemble.
@@ -473,16 +457,16 @@ def vote_ranker(series, lim=0.4):
         Parameters:
         ------------------------------
             series = pandas Series, containing image average 
-            lim = (dict), has to be in [0, 1]
+            limit = (dict), has to be in [0, 1]
         
         Returns:
         ------------------------------        
             Generator of Rank
         """
-        rank = 0
+        rank = 1
         for row in series.iloc[:-1]:
             yield rank
-            if row < lim:
+            if row < limit:
                 rank += 1
         yield rank
-    return list(vote_ranker_(series, lim))
+    return list(vote_ranker_(series, limit))
