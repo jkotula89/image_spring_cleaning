@@ -470,3 +470,40 @@ def vote_ranker(series, limit=0.41):
                 rank += 1
         yield rank
     return list(vote_ranker_(series, limit))
+
+def calculate_axis_ratio(img):
+    """
+    Function returns axis-ratio of image.
+    """
+    if len(img.shape) == 2:
+        h, v = img.shape
+    elif len(img.shape) == 3:
+        h, v, _ = img.shape
+    else:
+        h, v = img.shape[0], img.shape[1]
+        
+    return h/v
+
+def img_shape_ranker(series, limit=0.01):
+    def img_shape_ranker_(series, limit):
+        """
+        Ranker function, checks if a the image axis ratio changes (horizontal to vertical
+        and vice versa).
+        
+        Parameters:
+        ------------------------------
+            series = pandas Series, containing image average 
+            limit = (dict), has to be in (0, np.inf]
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        rank = 1
+        for row in series.iloc[:-1]:
+            yield rank
+            if abs(row) >= limit:
+                rank += 1
+        yield rank
+        
+    return list(img_shape_ranker_(series, limit))
