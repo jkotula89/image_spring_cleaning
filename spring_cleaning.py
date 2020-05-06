@@ -13,8 +13,11 @@ import shutil
 import cv2
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import scipy.stats as sts
+from sklearn.linear_model import LogisticRegression
 
-version = '0.0.2'
+version = '0.0.3'
 
 def split_filepath(file, split=False):
     """
@@ -122,7 +125,7 @@ def hash_image(img, min_pix=8):
         
     Returns:
     ------------------------------
-        Resized image.
+        array, Resized image.
     """
     if len(img.shape) == 2:
         y, x = img.shape
@@ -154,6 +157,9 @@ def copy_images(df, path=('./images/', './processed/'), rank_col=None, crit_col=
         rank_col: (str), ranked column in the DataFrame
         crit_col: (str), the column containing the criteria, greater
             values are better
+    Returns:
+    ------------------------------
+        None      
     """
     for cur_file in df.loc[df.groupby([rank_col])[crit_col].idxmax(), 'file'].values:
         shutil.copy2(path[0] + cur_file, path[1] + cur_file)
@@ -170,7 +176,7 @@ def rotate_img(img, degree=0):
         
     Returns:
     ------------------------------
-        Rotated image.
+        array, Rotated image.
     """
     rows, cols = img.shape
     M_rot = cv2.getRotationMatrix2D((cols/2,rows/2), degree, 1)
@@ -191,7 +197,7 @@ def warp_img(img, scale=0.0, how=None):
         
     Returns:
     ------------------------------
-        Warped image.
+        array, Warped image.
     """
     rows, cols = img.shape
     
@@ -294,7 +300,7 @@ def high_pass_filtering(img, x_shift=30, y_shift=30):
         
     Returns:
     ------------------------------
-        Magnitude spectrum of the image
+        array, Magnitude spectrum of the image
     """
     rows, cols = img.shape
     _row, _col = int(rows/2), int(cols/2)
@@ -474,6 +480,14 @@ def vote_ranker(series, limit=0.41):
 def calculate_axis_ratio(img):
     """
     Function returns axis-ratio of image.
+
+    Parameters:
+    ------------------------------
+        img: (array), input image
+    
+    Returns:
+    ------------------------------        
+       float, Axis ratio (horizontal/vertical)
     """
     if len(img.shape) == 2:
         h, v = img.shape
@@ -507,3 +521,313 @@ def img_shape_ranker(series, limit=0.01):
         yield rank
         
     return list(img_shape_ranker_(series, limit))
+
+
+def batch_hashing(df, n_dims=(8, 64)):
+    """
+    Function that calculates the image hashes for different image dimensions.
+    
+    Parameters:
+    ------------------------------
+        df: (pandas DataFrame), dataframe containing at least the following columns:
+            target, gray_images
+            
+        n_dims: (tuple, int), (min_value, max_value) for quadratic image hashes
+
+    Returns:
+    ------------------------------
+        list of pandas DataFrames    
+    """
+    df = df.copy()
+    targets = np.arange(0, len(df['target'].unique()))
+
+    runs = []
+    for i in range(*n_dims, 1):
+        df['hash_value'] = compare_hashes_adv(df['gray_images'], hash_dim=(i, i),
+                                                 return_hash_only=True)
+        df['hash_value'] /= (i*i) 
+        runs.append(df[['target', 'hash_value']].copy())
+        
+    return runs
+
+def return_hashing_dist(data, _type=None, target_col=None, comp_col=None):
+    """
+    Function that calculates the hash values for (first) similar & non-similar images
+    
+    Parameters:
+    ------------------------------
+        data: (list of pandas DataFrame), each dataframe is expected to contain
+                at least the following columns:
+                target, hash_value
+            
+        _type: (str), choose between 'similar' and 'nonsimilar' 
+        
+        target_col: (str), column name of the target column
+        
+        comp_col: (str), column name of the column used for comparison
+
+    Returns:
+    ------------------------------
+        list of pandas DataFrames
+    """
+    if _type == 'similar':
+        similar = []
+        for cur_res in data:
+            #TODO: calculate mean of element [0,n-1] if group size > 2
+            rel_rows = (cur_res.groupby([target_col])[comp_col].agg('count') > 1).values
+            similar.append(cur_res.groupby([target_col])[comp_col].first().iloc[rel_rows])
+        return similar
+    
+    elif _type == 'nonsimilar':
+        nonsimilar = np.array([cur_res.groupby([target_col])[comp_col].last().values 
+                  for cur_res in data])
+        return nonsimilar
+
+def make_logreg_fit(similar, nonsimilar, make_plot=True, 
+               labels=('x', 'Probability'), limits=None):
+    """
+    Function that performs a logistic regression fit on the groups of similar
+    and non-similar images and provides the threshold value (+ plot).
+        
+    Parameters:
+    ------------------------------
+        similar: (array), containing the hash values found
+                            for similar groups
+        nonsimilar: (array), containing the hash values found
+                            for non-similar groups
+        make_plot: (bool), create plot if True
+        labels: (tuple), x- and y-label for the plot
+        limits: (tuple), (min_x, max_x) for plots if not None
+                            
+        
+    Returns:
+    ------------------------------
+        float, threshold.
+    """
+    X_train = np.append(nonsimilar, similar)
+    X_train = np.c_[X_train, np.ones(len(X_train))]
+    y_train = np.array(len(nonsimilar)*[0] + len(similar)*[1])
+    
+    if limits is None:
+        min_val, max_val = min(X_train[:,0]), max(X_train[:,0])
+    else:
+        min_val, max_val = limits
+
+    lreg = LogisticRegression()
+    lreg.fit(X_train, y_train)
+
+    x_vals = np.arange(min_val*0.8, max_val*1.2, 0.001)
+    probs = lreg.predict_proba(np.c_[x_vals, np.ones(len(x_vals))])
+    lower_bound = np.argmax(probs[probs<=0.50])
+    
+    if make_plot is True:
+        fig, axs = plt.subplots(2, 1, figsize=(15, 10), sharex=True,
+                               gridspec_kw={'height_ratios': [5, 1]},
+                               tight_layout=True)
+        
+        for paxis in range(2):
+            axs[paxis].plot([x_vals[lower_bound], x_vals[lower_bound]], [-0.1, 1.1], '-',
+                 color='gray', alpha=0.5, lw=10)
+        
+        axs[0].plot(x_vals, probs[:,1], 'b-', label='Probability curve', alpha=0.5)
+        
+        axs[0].scatter(X_train[y_train==0, 0], lreg.predict_proba(X_train)[y_train==0, 1],
+                    marker='.', s=400, ec='gray', label='False', color='red', alpha=.8)
+        axs[0].scatter(X_train[y_train==1, 0], lreg.predict_proba(X_train)[y_train==1, 1],
+                    marker='.', s=400, ec='gray', label='True', color='green', alpha=.8)
+        
+        axs[1].eventplot(similar, lineoffsets=[0.2], linelengths=0.4, linewidths=0.5,
+                         orientation='horizontal', color='green', alpha=0.5)
+        axs[1].eventplot(nonsimilar, lineoffsets=[0.75], linelengths=0.4, linewidths=0.5,
+                         orientation='horizontal', color='red', alpha=0.5)
+
+        axs[0].axis([min_val*0.8, max_val*1.1, -0.1, 1.1])
+        axs[0].grid()
+        axs[0].legend(loc='upper left')
+
+        xl, yl = labels
+        axs[1].set_xlabel(xl)
+        axs[0].set_ylabel(yl)
+        axs[0].set_title('Logistic regression fit')
+        
+        axs[1].axis([min_val*0.9, max_val*1.1, -0.1, 1.1])
+        axs[1].set_ylabel('Event')
+        axs[1].tick_params(labelleft=False)
+        axs[1].grid()
+        plt.show()
+    
+    threshold = x_vals[lower_bound]
+    print('Limit at {:.2f}'.format(threshold))
+    return threshold
+
+
+def bootstrap_data(df, n_runs=10):
+    """
+    This function shuffles the input data and repeatedly calculates the
+    ranks using a variety of methods. This provides better estimates on
+    the average values for both image groups (similar or non-similar).
+    
+    Parameters:
+    ------------------------------
+        df: (pandas DataFrame), dataframe containing at least the following columns:
+            target, creation_date, hash_value, correl_corr, bhattacharyya_corr
+            
+        n_runs: (int), how often the experiment is repeated
+
+    Returns:
+    ------------------------------
+        list of pandas DataFrames
+    """
+    true_targets = df['target'].copy()
+    targets = np.arange(0, len(true_targets.unique()))
+
+    runs = []
+    for i in range(n_runs):
+        np.random.seed(i)
+        new_targets = np.random.choice(targets, size=len(targets), replace=False)
+        
+        # add some "randomness" by reversing images of each group
+        if i % 2 == 0:
+            df.sort_values(['creation_date'], inplace=True)
+        else:
+            df.sort_values(['creation_date'], ascending=False, inplace=True)
+            
+        df['target'] = true_targets.map(dict(zip(targets, new_targets)))
+        df.sort_values(['target'], inplace=True)
+        
+        df['hash_value'] = compare_hashes_adv(df['gray_images'].tolist(),
+                                                 return_hash_only=True)
+        df['correl_corr'] = calc_correlations(df['hsv_images'].tolist(),
+                                                 'correl')
+        df['bhattacharyya_corr'] = calc_correlations(df['hsv_images'].tolist(), 
+                                                'bhattacharyya')
+        
+        runs.append(df[['target', 'creation_date', 
+                        'hash_value', 'correl_corr', 'bhattacharyya_corr']])
+    return runs
+
+def return_dist(data, _type=None, target_col=None, comp_col=None):
+    """
+    Function that calculates the comparison values for (first) similar & non-similar images
+    
+    Parameters:
+    ------------------------------
+        data: (list of pandas DataFrame), each dataframe is expected to contain
+                at least the following columns:
+                target, hash_value
+            
+        _type: (str), choose between 'similar' and 'nonsimilar' 
+        
+        target_col: (str), column name of the target column
+        
+        comp_col: (str), column name of the column used for comparison
+
+    Returns:
+    ------------------------------
+        list of pandas DataFrames
+    """
+    if _type == 'similar':
+        similar = []
+        for cur_res in data:
+            #TODO: calculate mean of element [0,n-1] if group size > 2
+            rel_rows = (cur_res.groupby([target_col])[comp_col].agg('count') > 1).values
+            similar.append(cur_res.groupby([target_col])[comp_col].first().iloc[rel_rows])
+        similar = np.sort(np.array(similar).reshape(-1))
+        return similar
+    
+    elif _type == 'nonsimilar':
+        nonsimilar = np.sort(np.array([cur_res.groupby([target_col])[comp_col].last().values 
+                  for cur_res in data]).reshape(-1))
+        return nonsimilar
+
+def plot_distributions(similar, nonsimilar, bins=10, labels=('x', 'y'), title=''):
+    """
+    Function that plots the histogram + kernel density functions 
+    of comparison value for (first) similar & non-similar distributions.
+    
+    Parameters:
+    ------------------------------
+        similar: (array), containing the hash values found
+                            for similar groups
+        nonsimilar: (array), containing the hash values found
+                            for non-similar groups
+        bins: (int), number of bins in histogram
+        label: (tuple), x- and y-label for plot
+        title: (str), plot title
+
+    Returns:
+    ------------------------------
+        None
+    """
+    full_vals = np.append(similar, nonsimilar)
+    xmin, xmax = min(full_vals), max(full_vals)
+    margin = (xmax - xmin)*0.1
+    xrange = np.arange(xmin - margin*2, xmax + margin*2, 0.01)
+        
+    plt.figure(figsize=(15, 5))
+    kde_sim = sts.gaussian_kde(similar)
+    plt.hist(similar, bins=bins, rwidth=0.9, density=True, 
+             label='first', color='gold', alpha=0.7);
+    plt.plot(xrange, kde_sim(xrange), lw=2, ls='-', 
+             color='#6666ff', label='similar-KDE')
+
+    kde_nonsim = sts.gaussian_kde(nonsimilar)
+    plt.hist(nonsimilar, bins=bins, rwidth=0.9, density=True, 
+             label='last', color='gray', alpha=0.7);
+    plt.plot(xrange, kde_nonsim(xrange), lw=2, ls='-', 
+             color='#ff6666', label='last-KDE')
+    
+    plt.xlim([xmin - margin*2, xmax + margin*2])
+    plt.xlabel(labels[0])
+    plt.ylabel(labels[1])
+    plt.title(title)
+    plt.legend()
+    plt.grid()
+    plt.show()
+
+
+def performance_report(similar, nonsimilar, limit=None, add_std=False):
+    """
+    Prints a performance report.
+    
+    Parameters:
+    ------------------------------
+    
+        similar: (array), containing the hash values found
+                            for similar groups
+        nonsimilar: (array), containing the hash values found
+                            for non-similar groups
+        limit: (float), threshold value, if None, mean is used
+        add_std: (bool), if True, standard deviation is added to the
+                         mean threshold, works only if limit is None
+                         
+    Returns:
+    ------------------------------
+        None.
+    
+    """
+    def precision_score(tp, fp, eps=1e-10):
+        return (tp + eps) / (tp + fp + eps) 
+    
+    def recall_score(tp, fn, eps=1e-10):
+        return (tp + eps) / (tp + fn + eps)
+    
+    def f1_score(tp, fp, fn, eps=1e-10):
+        return 2 / (1/precision_score(tp, fp) + 1/recall_score(tp, fn))
+    
+    if limit is None:
+        limit = similar.mean()
+        if add_std is True:
+            limit += similar.std()
+        
+    tp = sum([1 for c in similar if c >= limit])
+    fn = len(similar) - tp
+    tn = sum([1 for c in nonsimilar if c < limit])
+    fp = len(nonsimilar) - tn
+
+    print('Performance report\n'+'-'*50)
+    print('True positive: {} -- False negative: {}'.format(tp, fn))
+    print('True negative: {} -- False positive: {}'.format(tn, fp))
+    print('\nPrecision score: {:.4f}'.format(precision_score(tp, fp)))
+    print('Recall score: {:.4f}'.format(precision_score(tp, fn)))
+    print('F1 score: {:.4f}'.format(f1_score(tp, fp, fn)))
