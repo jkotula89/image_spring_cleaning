@@ -660,7 +660,6 @@ def make_logreg_fit(similar, nonsimilar, make_plot=True,
     print('Limit at {:.2f}'.format(threshold))
     return threshold
 
-
 def bootstrap_data(df, n_runs=10):
     """
     This function shuffles the input data and repeatedly calculates the
@@ -803,7 +802,7 @@ def performance_report(similar, nonsimilar, limit=None, add_std=False):
                          
     Returns:
     ------------------------------
-        None.
+        tuple (precision_score, recall_score, f1_score)
     
     """
     def precision_score(tp, fp, eps=1e-10):
@@ -825,9 +824,57 @@ def performance_report(similar, nonsimilar, limit=None, add_std=False):
     tn = sum([1 for c in nonsimilar if c < limit])
     fp = len(nonsimilar) - tn
 
+    p_score, r_score = precision_score(tp, fp), recall_score(tp, fn)
+    f_score = f1_score(tp, fp, fn)
+
     print('Performance report\n'+'-'*50)
     print('True positive: {} -- False negative: {}'.format(tp, fn))
     print('True negative: {} -- False positive: {}'.format(tn, fp))
-    print('\nPrecision score: {:.4f}'.format(precision_score(tp, fp)))
-    print('Recall score: {:.4f}'.format(precision_score(tp, fn)))
-    print('F1 score: {:.4f}'.format(f1_score(tp, fp, fn)))
+    print('\nPrecision score: {:.4f}'.format(p_score))
+    print('Recall score: {:.4f}'.format(r_score))
+    print('F1 score: {:.4f}'.format(f_score))
+    return (p_score, r_score, f_score)
+
+def plot_summary(df):
+    """
+    Plots histogramms for the methods used.
+    
+    Parameters:
+    ------------------------------
+    
+        df: (pandas DataFrame), expecting index to contain names of methods and
+                                columns 
+                                - 'groups_found' (i.e., the number of
+                                image groups identified)
+                                - 'reduction'
+                                (i.e., the standardized reduction)
+                                - 'groups_true' (i.e., the true number of image
+                                groups)
+    Returns:
+    ------------------------------
+        None.
+    
+    """
+    fig, axs = plt.subplots(1,2, sharey=True, figsize=(15, 5),
+                       tight_layout=True)
+
+    methods = [m.replace('_rank', '').capitalize() for m in df.index]
+    n_img = df['groups_true'].values[0]
+    axs[0].barh(methods, df['groups_found'], alpha=0.6)
+    axs[0].plot([n_img, n_img], [-1, len(df)+1], 'r')
+
+    axs[0].set_xlim([0, df['groups_found'].max()*1.05])
+    axs[1].set_ylim([-0.5, len(df)])
+    axs[0].grid(which='major', axis='x', alpha=0.8)
+    axs[0].set_xlabel('Images identified')
+    axs[0].set_title('Images identified by different ranking methods\n')
+
+    axs[1].barh(methods, df['reduction'], alpha=0.6)
+    axs[1].plot([1.0, 1.0], [-1, len(df)+1], 'r')
+
+    axs[1].set_xlim([0, df['reduction'].max()*1.05])
+    axs[1].set_ylim([-0.5, len(df)])
+    axs[1].grid(which='major', axis='x', alpha=0.8)
+    axs[1].set_xlabel('Standardized reduction')
+    axs[1].set_title('Standardized reduction by different ranking methods\n')
+    plt.show()
