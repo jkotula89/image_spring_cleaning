@@ -411,6 +411,8 @@ def hash_ranker(series, dim=None, limit=0.875):
         Ranker function, distinguishes images based on similary of image hashes.
         Hash refers here to low resolution images (~8 px per x and y dimensions)
         
+        For advanced hashing, higher limit is recommended, e.g., limit ~= 0.925.
+
         Parameters:
         ------------------------------
             series = pandas Series, containing image hash values
@@ -696,13 +698,15 @@ def bootstrap_data(df, n_runs=10):
         
         df['hash_value'] = compare_hashes_adv(df['gray_images'].tolist(),
                                                  return_hash_only=True)
+        df['hash_value_adv'] = compare_hashes_adv(df['gray_images'].tolist(),
+                                            )
         df['correl_corr'] = calc_correlations(df['hsv_images'].tolist(),
                                                  'correl')
         df['bhattacharyya_corr'] = calc_correlations(df['hsv_images'].tolist(), 
                                                 'bhattacharyya')
         
-        runs.append(df[['target', 'creation_date', 
-                        'hash_value', 'correl_corr', 'bhattacharyya_corr']])
+        runs.append(df[['target', 'creation_date', 'hash_value',
+                        'hash_value_adv','correl_corr', 'bhattacharyya_corr']])
     return runs
 
 def return_dist(data, _type=None, target_col=None, comp_col=None):
