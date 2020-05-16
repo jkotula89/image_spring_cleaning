@@ -7,6 +7,7 @@ Thus, you do not have to pre-select images for your foto show yourself
 (content is not considered a quality critera).
 """
 
+from functools import partial
 import glob
 import os
 import shutil
@@ -17,7 +18,7 @@ import matplotlib.pyplot as plt
 import scipy.stats as sts
 from sklearn.linear_model import LogisticRegression
 
-version = '0.0.3'
+version = '0.1.3'
 
 def split_filepath(file, split=False):
     """
@@ -81,6 +82,8 @@ def read_img(file, read_type=None):
     """
     if read_type == None:
         return cv2.imread(file)
+    elif read_type == 'rgb':
+        return cv2.cvtColor(cv2.imread(file), cv2.COLOR_BGR2RGB)
     elif read_type == 'hsv':
         return cv2.cvtColor(cv2.imread(file), cv2.COLOR_BGR2HSV)
     elif read_type == 'gray':
@@ -114,7 +117,7 @@ def calculate_hist(img, channels=[0], mask=None, histSize=[256], ranges=[0, 256]
     """
     return cv2.calcHist([img], channels=channels, mask=None, histSize=histSize, ranges=ranges)
 
-def hash_image(img, min_pix=8):
+def minimize_image(img, min_pix=8):
     """
     Function that resizes images to icon size, leaving only the bare silhouette of the image.
     
@@ -243,7 +246,7 @@ def compare_hashes_adv(images, hash_dim=(8, 8), range_deg=(-5, 5, 1),
         return sum([1 if i[0] == i[1] else 0 for i in zip(img_a, img_b)])
     
     if return_hash_only is True:
-        images = [hash_image(img, min_pix=hash_dim) for img in images]
+        images = [minimize_image(img, min_pix=hash_dim) for img in images]
 
         img_mean = [np.mean(img) for img in images]
         imgs_reshaped = [img.reshape(-1) for img in images]
@@ -261,7 +264,7 @@ def compare_hashes_adv(images, hash_dim=(8, 8), range_deg=(-5, 5, 1),
             images_ += [rotate_img(img, deg) for deg in range(*range_deg)]
             images_ += [warp_img(img, scale, how=how) for how in warping 
                                                         for scale in np.arange(*range_warp)]
-            images_adv.append([hash_image(img, min_pix=hash_dim).reshape(-1) for img in images_])
+            images_adv.append([minimize_image(img, min_pix=hash_dim).reshape(-1) for img in images_])
         
         img_mean = [np.mean(img) for images in images_adv for img in images]
 
@@ -671,7 +674,7 @@ def bootstrap_data(df, n_runs=10):
     Parameters:
     ------------------------------
         df: (pandas DataFrame), dataframe containing at least the following columns:
-            target, creation_date, hash_value, correl_corr, bhattacharyya_corr
+            target, creation_date, gray_images, hsv_images, rgb_images
             
         n_runs: (int), how often the experiment is repeated
 
@@ -681,6 +684,14 @@ def bootstrap_data(df, n_runs=10):
     """
     true_targets = df['target'].copy()
     targets = np.arange(0, len(true_targets.unique()))
+
+    #TODO: replace methods with function call
+    methods = {'avg_hash': [cv2.img_hash.averageHash, 8],
+            'block_hash': [partial(cv2.img_hash.blockMeanHash, 
+                                            mode=cv2.img_hash.BLOCK_MEAN_HASH_MODE_1), 121],
+            'phash': [cv2.img_hash.pHash, 8],
+            'marr_hildreth_hash': [cv2.img_hash.marrHildrethHash, 72],
+            'radial_variance_hash': [cv2.img_hash.radialVarianceHash, 40]}
 
     runs = []
     for i in range(n_runs):
@@ -705,8 +716,21 @@ def bootstrap_data(df, n_runs=10):
         df['bhattacharyya_corr'] = calc_correlations(df['hsv_images'].tolist(), 
                                                 'bhattacharyya')
         
+
+        #TODO: method call with function call
+        for k, (func, dim) in methods.items():
+            df[k+'_value'] = df['rgb_images'].apply(lambda x: func(x))
+            df[k+'_value_tmp'] = np.append(df[k+'_value'].values[1:], 
+                                            df[k+'_value'].values[:1])
+            
+            df[k+'_value_cmp'] = df[[k+'_value', k+'_value_tmp']].apply(
+                                    lambda x: cv2.norm(x[0][0], x[1][0], cv2.NORM_HAMMING), axis=1)
+            df[k+'_value_cmp'] = 1 - df[k+'_value_cmp'] / (8 * dim)
+
+        add_cols = [c for c in df.columns if c.endswith('_cmp')]
+
         runs.append(df[['target', 'creation_date', 'hash_value',
-                        'hash_value_adv','correl_corr', 'bhattacharyya_corr']])
+                        'hash_value_adv','correl_corr', 'bhattacharyya_corr'] + add_cols])
     return runs
 
 def return_dist(data, _type=None, target_col=None, comp_col=None):
@@ -859,7 +883,7 @@ def plot_summary(df):
         None.
     
     """
-    fig, axs = plt.subplots(1,2, sharey=True, figsize=(15, 5),
+    fig, axs = plt.subplots(1,2, sharey=True, figsize=(15, 10),
                        tight_layout=True)
 
     methods = [m.replace('_rank', '').capitalize() for m in df.index]
@@ -882,3 +906,51 @@ def plot_summary(df):
     axs[1].set_xlabel('Standardized reduction')
     axs[1].set_title('Standardized reduction by different ranking methods\n')
     plt.show()
+
+
+def hash_image(image, method):
+    """
+    #TODO: DOCSTRING
+    # second value in list is used for normalization of hashing comparison value
+    """
+    methods = {'avg_hash': [cv2.img_hash.averageHash, 8],
+            'block_hash': [partial(cv2.img_hash.blockMeanHash, 
+                            mode=cv2.img_hash.BLOCK_MEAN_HASH_MODE_1), 121],
+            'phash': [cv2.img_hash.pHash, 8],
+            'marr_hildreth_hash': [cv2.img_hash.marrHildrethHash, 72],
+            'radial_variance_hash': [cv2.img_hash.radialVarianceHash, 40]}
+    
+    func, dim = methods[method]
+    image_values = pd.Series(image).apply(lambda x: func(x))
+    shifted = np.append(image_values.values[1:], 
+                         image_values.values[:1])
+    
+    comp = pd.DataFrame(np.c_[image_values, shifted]).apply(
+                    lambda x: cv2.norm(x[0][0], 
+                     x[1][0], cv2.NORM_HAMMING), axis=1)
+    norm = 1 - comp / (8 * dim)
+    return norm.values
+
+def hash_ranker2(series, limit=1.0):
+    def hash_ranker_(series, limit):
+        """
+        Ranker function, distinguishes images based on similary of image hashes.
+        #TODO: DOCSTRING
+
+        Parameters:
+        ------------------------------
+            series = pandas Series, containing image hash values
+            limit = (float), lower limit for hash similarity to be recognized 
+                            as similar images
+        
+        Returns:
+        ------------------------------        
+            Generator of Rank
+        """
+        rank = 1
+        for row in series.iloc[:-1]:
+            yield rank
+            if row < limit:
+                rank += 1
+        yield rank
+    return list(hash_ranker_(series, limit))
