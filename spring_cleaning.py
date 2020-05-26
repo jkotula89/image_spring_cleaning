@@ -3,8 +3,8 @@ This library contains a set of functions that help you detect similar
 images in your archive. It will detect the 'best' image per group using a 
 high-pass filter and copy these to another folder.
 
-Thus, you do not have to pre-select images for your foto show yourself 
-(content is not considered a quality critera).
+Thus, you do not have to pre-select images for your photo show yourself 
+(content itself is not considered a quality critera).
 """
 
 from functools import partial
@@ -292,7 +292,7 @@ def compare_hashes_adv(images, hash_dim=(8, 8), range_deg=(-5, 5, 1),
             compared_hashes.append(max_hash)
     return compared_hashes
 
-def high_pass_filtering(img, x_shift=30, y_shift=30):
+def high_pass_filter(img, x_shift=30, y_shift=30):
     """
     High-pass filter for images, calculates the magnitude spectrum.
     
@@ -954,3 +954,32 @@ def hash_ranker2(series, limit=1.0):
                 rank += 1
         yield rank
     return list(hash_ranker_(series, limit))
+
+def make_pre_copy(path_from, path_to, scale=None):
+    """
+    Function that copies images with modification meta data.
+    
+
+    Parameters:
+    ------------------------------
+        path_from = str, image input path
+        path_to = str, image output path
+        scale = float, resizing scale factor
+    
+    """
+    dict_files = read_files(path=path_from, ext='jpg')
+    df = pd.DataFrame(dict_files, columns=['file', 'creation_date'])
+
+    images = [read_img(path_from + cur_file)
+              for cur_file in df['file'].values]
+    
+    if scale is not None:
+        images = [resize_img(cur_img, scale) 
+                    for cur_img in images]
+
+    for name, file in zip(df['file'].values, images):
+        cv2.imwrite(path_to + name, file)
+
+    for _, file in df.iterrows():
+        os.utime(path_to + file['file'], 
+                 (file['creation_date'],  file['creation_date']))
